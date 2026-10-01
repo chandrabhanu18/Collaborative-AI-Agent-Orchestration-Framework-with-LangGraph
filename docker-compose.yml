@@ -1,0 +1,89 @@
+services:
+  db:
+    image: postgres:15
+    container_name: agent_db
+    restart: always
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: agent_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d agent_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: agent_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: agent_api
+    restart: always
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "${HOST_API_PORT:-8001}:8000"
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/agent_db
+      - ASYNC_DATABASE_URL=postgresql+asyncpg://user:password@db:5432/agent_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - LLM_API_KEY=${LLM_API_KEY:-sk-your-provider-key}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - API_PORT=8000
+      - API_HOST=0.0.0.0
+      - LOG_FILE_PATH=logs/agent_activity.log
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  worker:
+    build: .
+    container_name: agent_worker
+    restart: always
+    command: celery -A src.worker.celery_app.celery_app worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/agent_db
+      - ASYNC_DATABASE_URL=postgresql+asyncpg://user:password@db:5432/agent_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - LLM_API_KEY=${LLM_API_KEY:-sk-your-provider-key}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - LOG_FILE_PATH=logs/agent_activity.log
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pg_data:
